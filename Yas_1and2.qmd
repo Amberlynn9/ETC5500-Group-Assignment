@@ -1,0 +1,189 @@
+---
+title: "WDI Assignment"
+subtitle: "ETX3500 High Dimensional Data Analysis"
+author: "Yas Alsubousi (33409927)"
+date: today
+format:
+  pdf:
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(psych)
+library(knitr)
+library(VIM)
+
+raw <- read_csv("wdi_data.csv", na = "", show_col_types = FALSE) |>
+  mutate(across(4:32, ~ suppressWarnings(as.numeric(.x))))
+ind_cols <- names(raw)[4:32]
+```
+
+# Data Preparation
+
+## Missing Values
+
+```{r}
+row_miss <- rowSums(is.na(raw[, ind_cols]))
+d <- raw[row_miss < 8, ]
+```
+
+Only 142 of 217 economies have complete data. Missingness is concentrated in trade (18.9%), internet use (16.6%) and the labour indicators (15.2%), and in 29 economies missing 8 or more indicators, which sit above a natural break in the missingness counts. These were removed, leaving 188 countries. Most are small territories, but the group also includes conflict-affected states such as Syria and Yemen, so the missingness is not random.
+
+## Redundant Indicators
+
+```{r}
+
+r_pair <- cor(raw[, ind_cols], use = "pairwise.complete.obs")
+hi <- which(abs(r_pair) > 0.9 & upper.tri(r_pair), arr.ind = TRUE)
+data.frame(Indicator_1 = rownames(r_pair)[hi[, 1]],
+           Indicator_2 = colnames(r_pair)[hi[, 2]],
+           r = round(r_pair[hi], 3)) |>
+  kable()
+
+screen <- d |>
+  select(-c(iso2c, iso3c, country,
+            NY.GDP.PCAP.CD, NY.GDP.PCAP.PP.CD, SH.DYN.MORT,
+            SP.DYN.CBRT.IN, SL.EMP.TOTL.SP.ZS, NV.SRV.TOTL.ZS))
+```
+Near duplicate indicators double-weight a concept and destabilise factor analysis, so one member of each pair with r > 0.9 was dropped. GNI per capita was kept over both GDP per capita measures (r = 0.93–0.99), infant over under-5 mortality (0.98), fertility over the birth rate (0.98) and participation over the employment ratio (0.97). Services share was dropped because it is almost fully determined by agriculture and industry (r = −0.91).
+
+## Weak Indicators
+
+```{r}
+keep <- screen |>
+  select(-c(NY.GDP.MKTP.KD.ZG, SL.TLF.CACT.ZS, SL.UEM.TOTL.ZS,
+            AG.LND.FRST.ZS, NE.EXP.GNFS.ZS, NE.IMP.GNFS.ZS))
+```
+There were four variables whose sampling adequacy was less than 0.5- GDP growth (0.42), labour force participation (0.42), unemployment (0.45) and forest area (0.47). 
+They have been omitted. The two other omitted variables were exports and imports due to high missingness (18.9%). This Leaves 17 Indicators
+
+## Transformations
+
+```{r}
+keep_t <- keep |>
+  mutate(across(c(IT.NET.SECR.P6, EN.GHG.ALL.PC.CE.AR5, SH.STA.MMRT,
+                  NY.GNP.PCAP.CD, EN.ATM.PM25.MC.M3, SP.DYN.IMRT.IN), log),
+         NV.AGR.TOTL.ZS = sqrt(NV.AGR.TOTL.ZS))
+```
+Six right-skewed indicators were logged (servers, GHG, maternal and infant mortality, GNI and PM2.5), reducing skewness from 1.1–5.1 to within +-0.2. Agriculture share was square-rooted instead (1.13 to 0.43), since a log over corrects it. The transformations also lifted the borderline indicators above the MSA threshold: industry rose from 0.47 to 0.64 and health spending from 0.51 to 0.76.
+
+## Imputation
+
+```{r}
+X <- kNN(keep_t, k = 5, imp_var = FALSE)
+rownames(X) <- d$country
+```
+The remaining 50 missing cells (1.6%) were filled by kNN imputation (k = 5), which preserves the relationships between indicators better than mean imputation. The imputed values are plausible: for example, the US agriculture share comes out at 0.93%.
+
+## Outliers
+```{r}
+#| include: false
+md   <- mahalanobis(X, colMeans(X), cov(X))
+crit <- qchisq(0.999, df = ncol(X))   # cut-off
+
+crit
+sort(md, decreasing = TRUE)[1:8]
+```
+Six countries exceed the Mahalanobis critical value of 40.8: Nauru, Ukraine, Palau, Qatar, the Marshall Islands and Zambia. They reflect genuine but unusual profiles rather than errors, so they were retained.
+
+## Standardisation and Stability
+```{r}
+#| include: false
+Z <- scale(X)
+
+KMO(cor(Z))$MSA
+cortest.bartlett(cor(Z), n = nrow(Z))
+```
+Because the indicators use different units, all were standardised to z-scores. The data suit factor analysis: KMO = 0.91, and Bartlett's test gives $\chi^2$ = 3513, df = 136, p < 0.001.
+
+## Final clean dataset
+
+```{r}
+#| include: false
+clean <- X |> rownames_to_column("country")
+write_csv(clean, "wdi_clean.csv")
+```
+
+# What underlying dimensions can be identified in the data?
+
+## Number of Factors
+```{r}
+ev <- eigen(cor(Z))$values
+round(ev, 2)
+
+set.seed(1234)
+fa.parallel(Z, fm = "ml", fa = "fa")
+```
+
+```{r}
+map_dfr(1:6, \(k) {
+  f <- factanal(Z, factors = k, control = list(lower = 0.05))
+  tibble(factors = k,
+         chisq = round(f$STATISTIC, 1),
+         df    = f$dof,
+         p     = signif(f$PVAL, 2),
+         BIC   = round(f$STATISTIC - f$dof * log(nrow(Z)), 1))
+})
+```
+
+```{r}
+fa4 <- factanal(Z, factors = 4, rotation = "promax", control = list(lower = 0.05))
+print(fa4$loadings, cutoff = 0.3, sort = TRUE)
+```
+
+Factor analysis was used instead of PCA because the aim was to identify underlying latent dimensions while separating shared variance from unique variance. The uniqueness lower bound was increased to 0.05 to avoid Heywood cases.
+
+Three eigenvalues were above 1 (9.71, 2.07 and 1.10), explaining 75.8% of total variance. Parallel analysis also supported three factors, and the scree plot flattened after the third. Although BIC was lower for four factors, the fourth factor was weak and mainly contained variables that already loaded more strongly on Factor 1. Therefore, three factors were retained.
+
+## Rotation
+```{r}
+fa_var <- factanal(Z, factors = 3, rotation = "varimax", control = list(lower = 0.05))
+fa_pro <- factanal(Z, factors = 3, rotation = "promax",  control = list(lower = 0.05),
+                   scores = "regression")
+
+print(fa_var$loadings, cutoff = 0.3, sort = TRUE)
+print(fa_pro$loadings, cutoff = 0.3, sort = TRUE)
+
+# How correlated are the promax factors?
+round(solve(crossprod(fa_pro$rotmat)), 2)
+```
+Varimax and promax rotations identified the same three factors, but promax was more appropriate because the factors were clearly related. The strongest correlation was between F1 and F3 at −0.49, meaning varimax’s assumption of uncorrelated factors would be unrealistic. Promax also produced smaller cross-loadings for fertility and dependency, giving a cleaner factor structure. Therefore, promax was used.
+
+
+## Interpretation
+```{r}
+S <- fa_pro$scores
+rownames(S) <- rownames(X)
+
+for (j in 1:3) {
+  o <- order(S[, j])
+  cat("Factor", j, "\n  Lowest: ", head(rownames(S)[o], 5),
+      "\n  Highest:", rev(tail(rownames(S)[o], 5)), "\n\n")
+}
+```
+
+* **Factor 1 (development)** has high positive loadings for GNI (0.91), life expectancy, internet use and urbanisation, and negative loadings for vulnerable employment (−0.88), mortality and agriculture. Israel, Norway and Australia score highest, while Myanmar, Nepal and Haiti score lowest.
+
+* **Factor 2 (industrial/resource structure)** is mainly driven by industry share (0.68) and PM2.5 (0.59), while health spending loads negatively (−0.50). Gulf states score highest, showing this factor reflects how countries generate income rather than their overall level of development.
+
+* **Factor 3 (dependency burden)** is driven by age dependency (0.79), fertility (0.55) and population growth (0.43). It separates younger, high-fertility populations from countries with larger working-age populations.
+
+Overall, the three factors are clear and interpretable. Immunisation is the weakest indicator, loading 0.47 on Factor 1.
+
+## Robustness
+```{r}
+out   <- names(sort(md, decreasing = TRUE))[1:6]
+keep2 <- !(rownames(X) %in% out)
+
+fa_rob <- factanal(scale(X[keep2, ]), factors = 3, rotation = "promax",
+                   control = list(lower = 0.05))
+
+factor.congruence(fa_pro$loadings, fa_rob$loadings)
+```
+
+Removing the six Mahalanobis outliers gave Tucker congruence coefficients of 1.00, 0.99 and 1.00, showing that the factor structure remained almost identical and was not driven by unusual countries.
