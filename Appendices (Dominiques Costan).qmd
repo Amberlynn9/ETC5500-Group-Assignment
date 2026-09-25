@@ -1,0 +1,32 @@
+---
+title: "Appendix (Dominiques Costan)"
+format: pdf
+editor: visual
+---
+
+## Appendix
+
+```{r}
+#| label: appendix
+#| fig-cap: "Appendix figures and tables."
+
+#Figure A1: Correlation matrix
+corrplot::corrplot(cor(wdi %>% select(-any_of("cluster"))),
+                   method = "color", type = "upper", tl.cex = 0.5)
+
+#Figure A2: Elbow plot 
+fviz_nbclust(pca_scores, kmeans, method = "wss")
+
+#Table A1: PCA loadings
+round(pca$rotation[, 1:5], 2) %>%
+  as.data.frame() %>%
+  knitr::kable()
+
+#Table A2: Cluster means
+wdi %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE))) %>%
+  pivot_longer(-cluster) %>%
+  pivot_wider(names_from = cluster, values_from = value) %>%
+  knitr::kable(digits = 2)
+```

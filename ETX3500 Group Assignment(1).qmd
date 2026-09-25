@@ -1,0 +1,112 @@
+---
+title: "ETX3500 Group Assignment"
+format: pdf
+editor: visual
+---
+
+## Are there distinct groups of countries?
+
+Investigate whether countries can be classified into meaningful groups.
+
+Answer: Yes, countries can be classified into meaningful groups.
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(factoextra)
+library(corrplot)
+
+wdi <- read.csv("wdi_clean.csv", stringsAsFactors = FALSE)
+rownames(wdi) <- wdi$country
+wdi <- wdi[, -1]
+wdi_scaled <- scale(wdi)
+
+pca <- prcomp(wdi_scaled, center = TRUE, scale. = TRUE)
+pca_scores <- as.data.frame(pca$x[, 1:5])
+
+hc <- hclust(dist(pca_scores), method = "ward.D2")
+
+set.seed(802)
+km <- kmeans(pca_scores, centers = 4, nstart = 50)
+wdi$cluster <- factor(km$cluster)
+```
+
+## Methodology
+
+The data set contains 17 World Development Indicators for 188 countries, covering economic structure, income, technology, health, urbanization, employment, demographics, and environmental pressure. These indicators are strongly correlated. For example, GNP per capita with internet use and life expectancy, and fertility with infant mortality. Clustering directly on correlated variables would double-count shared variance and distort distances.
+
+A two-stage approach was therefore adopted. First, Principal Component Analysis (PCA) was applied to z-score standardized data to produce orthogonal components. Five components with eigenvalues greater than 1 were retained, capturing roughly 77% of total variance. Second, k-means clustering was run on these five PC scores, avoiding domination by redundant variables. The solution was validated using Ward's hierarchical clustering.
+
+## PCA
+
+```{r}
+#| label: fig-pca-var
+#| fig-cap: "Variable contributions to PC1 and PC2."
+#| fig-width: 8
+#| fig-height: 6
+
+fviz_pca_var(pca, axes = c(1, 2),
+             col.var = "contrib",
+             gradient.cols = c("blue", "orange", "red"),
+             repel = TRUE)
+```
+
+PC1 is a development and health axis: high scores reflect wealth, internet access, longevity, and health spending; low scores reflect high fertility, infant mortality, and vulnerable employment. PC2 is a resource and emissions axis separating industrial and oil economies from agrarian ones. PC3 captures demographic pressure, PC4 health-system quality, and PC5 labour-market vulnerability.
+
+## Choosing K
+
+```{r}
+#| label: fig-silhouette
+#| fig-cap: "Average silhouette width for k = 2 to 10."
+#| fig-width: 7
+#| fig-height: 5
+fviz_nbclust(pca_scores, kmeans, method = "silhouette")    
+
+#| label: fig-dendrogram
+#| fig-cap: "Ward's hierarchical clustering dendrogram."
+#| fig-width: 8
+#| fig-height: 5
+fviz_dend(hc, k = 4, rect = TRUE, cex = 0.4)
+```
+
+The elbow in within-cluster sum of squares, the highest silhouette width of 0.38, and the dendrogram all converged on k = 4.
+
+## The Four Clusters
+
+```{r}
+#| label: fig-cluster
+#| fig-cap: "K-means clusters in PC1–PC2 space."
+#| fig-width: 8
+#| fig-height: 6
+
+set.seed(345)
+km <- kmeans(pca_scores, centers = 4, nstart = 50)
+wdi$cluster <- factor(km$cluster)
+
+fviz_cluster(km, data = pca_scores, geom = "text", repel = TRUE)
+```
+
+Cluster 1 (developed economies) has high income, internet penetration above 85%, life expectancy of 80–85 years, and low fertility. Cluster 2 (emerging economies) is intermediate. Cluster 3 (least developed) has low income, low internet use, high fertility, and high vulnerable employment. Cluster 4 (small island and resource-rich outliers) is heterogeneous in income but distinctive in size, openness, and energy profile.
+
+## Underlying Dimensions
+
+The clusters occupy clearly different positions on the five PC dimensions. Cluster 1 scores highest on PC1 and PC4, reflecting wealth, longevity, and strong health systems. Cluster 3 scores lowest on both but highest on PC3 and PC5, consistent with young, fast-growing populations and vulnerable labor markets. Cluster 2 sits between Clusters 1 and 3 on all four dimensions. Cluster 4 is defined less by the development gradient and more by extreme PC2 values.
+
+```{r}
+#| label: fig-pc-boxplots
+#| fig-cap: "PC scores by cluster."
+#| fig-width: 9
+#| fig-height: 6
+
+pca_scores %>%
+  mutate(cluster = factor(km$cluster)) %>%
+  select(cluster, PC1:PC5) %>%
+  pivot_longer(-cluster) %>%
+  ggplot(aes(cluster, value, fill = cluster)) +
+  geom_boxplot() +
+  facet_wrap(~ name, scales = "free_y") +
+  theme_minimal()
+```
+
+The clusters are statistically robust and substantively interpretable, mirroring established global development patterns.
