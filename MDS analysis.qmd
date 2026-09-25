@@ -1,0 +1,387 @@
+---
+title: "Untitled"
+format: html
+---
+
+# Country Similarities Using Multidimensional Scaling
+
+Multidimensional scaling (MDS) was used to investigate how effectively the similarities and differences among countries could be represented in a lower-dimensional space.
+
+## Data and Dissimilarity Measure
+
+```{r mds-setup, include=FALSE}
+library(tidyverse)
+library(ggrepel)
+library(knitr)
+
+# Load the cleaned data created during data preparation
+wdi <- read_csv("wdi_clean.csv", show_col_types = FALSE)
+
+# Country names
+countries <- wdi$country
+
+# Retain indicator variables only
+X <- wdi |>
+  select(-country) |>
+  mutate(across(everything(), as.numeric))
+
+# Standardise variables
+Z <- scale(X)
+
+rownames(Z) <- countries
+
+# Euclidean dissimilarity matrix
+D <- dist(Z, method = "euclidean")
+```
+
+The MDS analysis used the same 17 cleaned indicators retained during data preparation. Because the indicators were measured in different units, they were standardised to z-scores before distances were calculated. Euclidean distance was then used to measure overall dissimilarity between countries. This was appropriate because all retained indicators were continuous and standardisation ensured that variables with larger numerical scales did not dominate the distances.
+
+## Number of MDS Dimensions
+
+To determine how many dimensions were required, metric MDS solutions containing one to five dimensions were compared. Representation quality was evaluated using the correlation between the original Euclidean distances and distances reconstructed from the MDS coordinates, together with normalised representation error.
+
+```{r mds-dimension-fit}
+mds_fit <- map_dfr(1:5, function(k) {
+
+  fit_k <- cmdscale(
+    D,
+    k = k,
+    eig = TRUE
+  )
+
+  fitted_distance <- dist(fit_k$points)
+
+  original_vec <- as.vector(D)
+  fitted_vec   <- as.vector(fitted_distance)
+
+  tibble(
+    dimensions = k,
+
+    distance_correlation =
+      cor(original_vec, fitted_vec),
+
+    normalised_stress =
+      sqrt(
+        sum((original_vec - fitted_vec)^2) /
+          sum(original_vec^2)
+      ),
+
+    GOF_1 = fit_k$GOF[1],
+    GOF_2 = fit_k$GOF[2]
+  )
+})
+
+kable(
+  mds_fit,
+  digits = 3,
+  col.names = c(
+    "Dimensions",
+    "Distance correlation",
+    "Normalised stress",
+    "GOF 1",
+    "GOF 2"
+  ),
+  caption = "Goodness of fit for alternative MDS dimensionalities"
+)
+```
+
+```{r fig-mds-fit, fig.cap="Representation error across alternative MDS dimensionalities.", fig.width=7, fig.height=4.5}
+ggplot(
+  mds_fit,
+  aes(x = dimensions, y = normalised_stress)
+) +
+  geom_line() +
+  geom_point(size = 2.5) +
+  scale_x_continuous(breaks = 1:5) +
+  labs(
+    x = "Number of MDS dimensions",
+    y = "Normalised representation error"
+  ) +
+  theme_minimal()
+```
+
+```{r mds-summary-values, include=FALSE}
+stress_1 <- mds_fit |>
+  filter(dimensions == 1) |>
+  pull(normalised_stress)
+
+stress_2 <- mds_fit |>
+  filter(dimensions == 2) |>
+  pull(normalised_stress)
+
+stress_3 <- mds_fit |>
+  filter(dimensions == 3) |>
+  pull(normalised_stress)
+
+corr_2 <- mds_fit |>
+  filter(dimensions == 2) |>
+  pull(distance_correlation)
+
+corr_3 <- mds_fit |>
+  filter(dimensions == 3) |>
+  pull(distance_correlation)
+
+improvement_12 <- 100 * (stress_1 - stress_2) / stress_1
+improvement_23 <- 100 * (stress_2 - stress_3) / stress_2
+```
+
+Moving from one to two dimensions reduced the representation error by `r round(improvement_12, 1)`%, with the two-dimensional solution producing a normalised stress of `r round(stress_2, 3)` and a correlation of `r round(corr_2, 3)` between the original and represented distances. A third dimension reduced stress further to `r round(stress_3, 3)` and increased the distance correlation to `r round(corr_3, 3)`.
+
+The first two dimensions were retained for the principal visual representation because they provide an interpretable map of country similarities while capturing the major structure in the dissimilarities. The improvement obtained from the three-dimensional solution is also reported to show the additional information gained by increasing dimensionality.
+
+## Two-Dimensional Representation
+
+```{r mds-two-dimensional}
+mds2 <- cmdscale(
+  D,
+  k = 2,
+  eig = TRUE
+)
+
+mds_df <- as.data.frame(mds2$points)
+
+names(mds_df) <- c("MDS1", "MDS2")
+
+mds_df <- mds_df |>
+  rownames_to_column("country")
+```
+
+To identify countries with particularly unusual multivariate profiles, the average Euclidean distance of each country from all other countries was calculated.
+
+```{r mds-unusual-countries}
+D_matrix <- as.matrix(D)
+
+diag(D_matrix) <- NA
+
+unusual_countries <- tibble(
+  country = rownames(D_matrix),
+  average_distance = rowMeans(D_matrix, na.rm = TRUE)
+) |>
+  arrange(desc(average_distance))
+
+top_unusual <- unusual_countries |>
+  slice_head(n = 8)
+
+kable(
+  top_unusual,
+  digits = 2,
+  caption = "Countries with the most unusual multivariate profiles"
+)
+```
+
+```{r fig-mds-map, fig.cap="Two-dimensional MDS representation of similarities among countries.", fig.width=8.5, fig.height=6.5}
+ggplot(
+  mds_df,
+  aes(x = MDS1, y = MDS2)
+) +
+  geom_point(alpha = 0.65, size = 2) +
+  geom_text_repel(
+    data = mds_df |>
+      filter(country %in% top_unusual$country),
+    aes(label = country),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  labs(
+    x = "MDS Dimension 1",
+    y = "MDS Dimension 2"
+  ) +
+  theme_minimal()
+```
+
+Countries positioned close together in the MDS map have relatively similar profiles across the 17 indicators, whereas countries positioned far apart differ more substantially. The plot shows a broad continuous pattern rather than completely isolated country groups, suggesting that many cross-country differences reflect gradual changes in economic, health, demographic and social conditions.
+
+Several countries appear further from the centre of the configuration. The countries with the largest average multivariate distances were `r paste(head(top_unusual$country, 5), collapse = ", ")`. Their separation indicates combinations of indicator values that are relatively uncommon compared with the remaining countries.
+
+## Interpretation of the MDS Dimensions
+
+Because MDS dimensions are constructed from distances rather than directly from individual variables, correlations between the MDS coordinates and the original standardised indicators were examined to interpret the axes.
+
+```{r mds-axis-correlations}
+axis_cor <- cor(
+  Z,
+  as.matrix(mds_df[, c("MDS1", "MDS2")])
+)
+
+axis_cor_long <- tibble(
+  indicator = rep(rownames(axis_cor), 2),
+  dimension = rep(
+    c("MDS1", "MDS2"),
+    each = nrow(axis_cor)
+  ),
+  correlation = c(
+    axis_cor[, 1],
+    axis_cor[, 2]
+  )
+)
+
+top_axis_cor <- axis_cor_long |>
+  group_by(dimension) |>
+  slice_max(
+    order_by = abs(correlation),
+    n = 6,
+    with_ties = FALSE
+  ) |>
+  arrange(
+    dimension,
+    desc(abs(correlation))
+  )
+
+kable(
+  top_axis_cor,
+  digits = 2,
+  col.names = c(
+    "Indicator",
+    "MDS dimension",
+    "Correlation"
+  ),
+  caption = "Indicators most strongly associated with the MDS dimensions"
+)
+```
+
+```{r mds-axis-text, include=FALSE}
+mds1_variables <- top_axis_cor |>
+  filter(dimension == "MDS1") |>
+  slice_head(n = 5) |>
+  pull(indicator)
+
+mds2_variables <- top_axis_cor |>
+  filter(dimension == "MDS2") |>
+  slice_head(n = 5) |>
+  pull(indicator)
+```
+
+MDS Dimension 1 was most strongly associated with `r paste(mds1_variables, collapse = ", ")`. These indicators describe major differences in development, health and demographic conditions, indicating that the first MDS dimension primarily represents the broad development gradient already observed in the factor analysis.
+
+MDS Dimension 2 was most strongly associated with `r paste(mds2_variables, collapse = ", ")`. This dimension therefore captures additional differences in countries' economic, demographic and environmental structures that are not fully explained by their overall level of development.
+
+The direction of an MDS axis is arbitrary, so the substantive interpretation is based on the variables associated with each dimension rather than whether a country has a positive or negative coordinate.
+
+## Most Similar Countries
+
+The closest country pairs in the original 17-dimensional standardised indicator space were examined to provide specific examples of countries with similar profiles.
+
+```{r mds-similar-pairs}
+D_full <- as.matrix(D)
+
+pair_index <- which(
+  upper.tri(D_full),
+  arr.ind = TRUE
+)
+
+similar_pairs <- tibble(
+  country_1 =
+    rownames(D_full)[pair_index[, 1]],
+
+  country_2 =
+    colnames(D_full)[pair_index[, 2]],
+
+  distance =
+    D_full[pair_index]
+) |>
+  arrange(distance)
+
+closest_pairs <- similar_pairs |>
+  slice_head(n = 10)
+
+kable(
+  closest_pairs,
+  digits = 2,
+  caption = "Ten most similar country pairs based on the retained indicators"
+)
+```
+
+```{r mds-pair-text, include=FALSE}
+closest_1 <- closest_pairs[1, ]
+closest_2 <- closest_pairs[2, ]
+closest_3 <- closest_pairs[3, ]
+```
+
+For example, `r closest_1$country_1` and `r closest_1$country_2` form the closest pair, with a standardised Euclidean distance of `r round(closest_1$distance, 2)`. Other particularly similar pairs include `r closest_2$country_1` and `r closest_2$country_2`, and `r closest_3$country_1` and `r closest_3$country_2`. These similarities are based on countries' overall multivariate profiles rather than income alone.
+
+## Explaining Unusual Country Profiles
+
+To determine why countries at the edges of the MDS configuration were unusual, the indicators with the largest absolute standardised values were identified for the most distant countries.
+
+```{r unusual-country-profiles}
+Z_df <- as.data.frame(Z) |>
+  rownames_to_column("country")
+
+unusual_profiles <- Z_df |>
+  filter(
+    country %in%
+      head(top_unusual$country, 6)
+  ) |>
+  pivot_longer(
+    cols = -country,
+    names_to = "indicator",
+    values_to = "z_score"
+  ) |>
+  group_by(country) |>
+  slice_max(
+    order_by = abs(z_score),
+    n = 4,
+    with_ties = FALSE
+  ) |>
+  arrange(
+    country,
+    desc(abs(z_score))
+  )
+
+kable(
+  unusual_profiles,
+  digits = 2,
+  col.names = c(
+    "Country",
+    "Indicator",
+    "Standardised value"
+  ),
+  caption = "Indicators contributing most strongly to unusual country profiles"
+)
+```
+
+The unusual locations of these countries are therefore not treated as data errors. Instead, they reflect genuine combinations of extreme economic, demographic, health or environmental characteristics. This is consistent with the earlier Mahalanobis-distance analysis, which also identified a small number of countries with unusual but plausible multivariate profiles.
+
+## Quality of the Two-Dimensional Representation
+
+A Shepard-style comparison was used to examine how closely distances in the two-dimensional representation reproduce the original 17-dimensional distances.
+
+```{r fig-mds-shepard, fig.cap="Original Euclidean distances compared with distances in the two-dimensional MDS representation.", fig.width=6.5, fig.height=5.5}
+mds_distance <- dist(mds2$points)
+
+shepard_df <- tibble(
+  original_distance = as.vector(D),
+  represented_distance =
+    as.vector(mds_distance)
+)
+
+ggplot(
+  shepard_df,
+  aes(
+    x = original_distance,
+    y = represented_distance
+  )
+) +
+  geom_point(
+    alpha = 0.2,
+    size = 1
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE
+  ) +
+  labs(
+    x = "Original standardised Euclidean distance",
+    y = "Distance in two-dimensional MDS space"
+  ) +
+  theme_minimal()
+```
+
+The relationship between the original and represented distances is strong (`r round(corr_2, 3)`), indicating that the two-dimensional map preserves much of the overall ordering of country similarities. Nevertheless, some information is inevitably lost when the original 17-dimensional indicator space is compressed into only two dimensions, as shown by the reduction in stress when a third dimension is included.
+
+## MDS Conclusion
+
+Overall, the MDS analysis indicates that country similarity is strongly structured by differences in development, health and demographic conditions, with a second dimension capturing additional economic and environmental variation. Countries with comparable multivariate profiles are positioned close together even when they are geographically unrelated, while several countries occupy unusual positions because of extreme combinations of indicators.
+
+The results also complement the factor analysis: the major separation visible in the MDS representation broadly corresponds to the development dimension identified by the latent-factor model. This provides additional evidence that country differences cannot be adequately understood from income alone and instead reflect several interconnected dimensions of development.
+
